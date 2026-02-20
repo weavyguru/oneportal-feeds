@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OnePortal</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+
+    header {
+      background: #1a1a2e; color: #fff; padding: 1rem 2rem;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    header h1 { font-size: 1.25rem; }
+    .header-right { display: flex; align-items: center; gap: 1rem; }
+    .notification-btn {
+      background: none; border: none; color: #fff; cursor: pointer;
+      padding: 0.35rem; border-radius: 4px; position: relative;
+      display: flex; align-items: center;
+    }
+    .notification-btn:hover { background: rgba(255,255,255,0.1); }
+    .user-select { display: flex; align-items: center; gap: 0.5rem; }
+    .user-select label { font-size: 0.85rem; opacity: 0.8; }
+    .user-select select {
+      padding: 0.35rem 0.5rem; border-radius: 4px; border: none;
+      font-size: 0.85rem; background: #16213e; color: #fff; cursor: pointer;
+    }
+
+    .tabs {
+      display: flex; background: #f0f0f0; border-bottom: 2px solid #ddd;
+    }
+    .tabs button {
+      padding: 0.75rem 1.5rem; border: none; background: none;
+      font-size: 0.9rem; cursor: pointer; border-bottom: 2px solid transparent;
+      margin-bottom: -2px; color: #555;
+    }
+    .tabs button.active {
+      border-bottom-color: #1a1a2e; color: #1a1a2e; font-weight: 600;
+    }
+
+    main { flex: 1; padding: 2rem; overflow: auto; }
+    .tab-panel { display: none; height: 100%; }
+    .tab-panel.active { display: block; }
+    wy-posts { display: block; height: 100%; max-width: 600px; margin: 0 auto; }
+
+    .notification-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 99;
+    }
+    .notification-overlay.open { display: block; }
+    .notification-flyout {
+      position: fixed; top: 0; right: -400px; width: 400px; height: 100vh;
+      background: #fff; box-shadow: -2px 0 8px rgba(0,0,0,0.15);
+      z-index: 100; display: flex; flex-direction: column;
+      transition: right 0.25s ease;
+    }
+    .notification-flyout.open { right: 0; }
+    .flyout-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1rem 1.25rem; border-bottom: 1px solid #eee;
+      font-weight: 600; font-size: 1rem;
+    }
+    .flyout-close {
+      background: none; border: none; font-size: 1.5rem; cursor: pointer;
+      color: #555; line-height: 1;
+    }
+    .flyout-close:hover { color: #000; }
+    .notification-flyout wy-notifications { flex: 1; overflow: auto; }
+
+    .editor-toggle {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.5rem 0; font-size: 0.85rem; color: #555;
+    }
+    .editor-toggle input { cursor: pointer; }
+    .editor-toggle label { cursor: pointer; user-select: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>OnePortal</h1>
+    <div class="header-right">
+      <button class="notification-btn" style="position: relative;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,4A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21"/></svg>
+        <wy-notification-badge badge="count" badgePosition="top-right"></wy-notification-badge>
+      </button>
+      <div class="user-select">
+        <label for="user-dropdown">Acting as:</label>
+        <select id="user-dropdown"></select>
+      </div>
+    </div>
+  </header>
+
+  <div class="notification-overlay" id="notification-overlay"></div>
+  <div class="notification-flyout" id="notification-flyout">
+    <div class="flyout-header">
+      <span>Notifications</span>
+      <button class="flyout-close" id="flyout-close">&times;</button>
+    </div>
+    <wy-notifications></wy-notifications>
+  </div>
+
+  <div class="tabs" id="tab-bar"></div>
+
+  <main id="tab-content"></main>
+
+  <script type="module">
+    const configRes = await fetch("/api/config");
+    const config = await configRes.json();
+
+    // Populate user dropdown
+    const dropdown = document.getElementById("user-dropdown");
+    for (const user of config.users) {
+      const opt = document.createElement("option");
+      opt.value = user.uid;
+      opt.textContent = user.name;
+      if (user.uid === config.currentUser) opt.selected = true;
+      dropdown.appendChild(opt);
+    }
+
+    // Notification flyout
+    const flyout = document.getElementById("notification-flyout");
+    const overlay = document.getElementById("notification-overlay");
+    const notifBtn = document.querySelector(".notification-btn");
+    const flyoutClose = document.getElementById("flyout-close");
+
+    function toggleFlyout() {
+      flyout.classList.toggle("open");
+      overlay.classList.toggle("open");
+    }
+    function closeFlyout() {
+      flyout.classList.remove("open");
+      overlay.classList.remove("open");
+    }
+    notifBtn.addEventListener("click", toggleFlyout);
+    flyoutClose.addEventListener("click", closeFlyout);
+    overlay.addEventListener("click", closeFlyout);
+
+    // Navigate to the correct tab when a notification is clicked
+    document.addEventListener("wy-link", (e) => {
+      const appUid = e.detail?.link?.app?.uid;
+      if (!appUid) return;
+      const matched = config.apps.find((a) => a.uid === appUid);
+      if (matched) {
+        closeFlyout();
+        history.pushState(null, "", `/tab/${matched.slug}`);
+        activateTab(matched.slug);
+      }
+    });
+
+    dropdown.addEventListener("change", async () => {
+      await fetch("/api/switch-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid: dropdown.value }),
+      });
+      window.location.reload();
+    });
+
+    // Inject CSS to hide editor on apps where current user is not allowed to write
+    const hideRules = config.apps
+      .filter((a) => a.hideEditorExcept && !a.hideEditorExcept.includes(config.currentUser))
+      .map((a) => `wy-posts[uid="${a.uid}"]::part(wy-post-editor) { display: none; }`)
+      .join("\n");
+    if (hideRules) {
+      const style = document.createElement("style");
+      style.textContent = hideRules;
+      document.head.appendChild(style);
+    }
+
+    // Build tabs and panels from apps
+    const tabBar = document.getElementById("tab-bar");
+    const tabContent = document.getElementById("tab-content");
+
+    // Dynamic style element for toggle-controlled editor hiding
+    const toggleStyle = document.createElement("style");
+    toggleStyle.id = "editor-toggle-styles";
+    document.head.appendChild(toggleStyle);
+
+    // Fetch permissions from Weavy API for apps that need editor toggle
+    const toggleApps = config.apps.filter((a) => a.editorToggle);
+    const permissionsMap = {};
+    await Promise.all(
+      toggleApps.map(async (app) => {
+        const res = await fetch(`/api/apps/${app.uid}/permissions`);
+        const data = await res.json();
+        permissionsMap[app.uid] = data.permissions;
+      })
+    );
+
+    config.apps.forEach((app, i) => {
+      // Tab button
+      const btn = document.createElement("button");
+      btn.textContent = app.name;
+      btn.dataset.slug = app.slug;
+      tabBar.appendChild(btn);
+
+      // Tab panel
+      const panel = document.createElement("div");
+      panel.classList.add("tab-panel");
+      panel.id = `panel-${app.slug}`;
+
+      // If app has editorToggle, check Weavy permissions for create (write)
+      if (app.editorToggle) {
+        const perms = permissionsMap[app.uid] || [];
+        const canWrite = perms.includes("create");
+
+        if (!canWrite) {
+          const toggleId = `toggle-${app.uid}`;
+          const toggle = document.createElement("div");
+          toggle.classList.add("editor-toggle");
+          toggle.innerHTML = `
+            <input type="checkbox" id="${toggleId}">
+            <label for="${toggleId}">Hide editors (read-only access)</label>
+          `;
+          panel.appendChild(toggle);
+
+          toggle.querySelector("input").addEventListener("change", (e) => {
+            updateToggleRule(app.uid, e.target.checked);
+          });
+        }
+      }
+
+      panel.insertAdjacentHTML("beforeend", `<wy-posts uid="${app.uid}"></wy-posts>`);
+      tabContent.appendChild(panel);
+    });
+
+    function updateToggleRule(appUid, hidden) {
+      const rules = [];
+      for (const input of document.querySelectorAll(".editor-toggle input")) {
+        const uid = input.id.replace("toggle-", "");
+        if ((uid === appUid ? hidden : input.checked)) {
+          rules.push(`wy-posts[uid="${uid}"]::part(wy-editor) { display: none; }`);
+        }
+      }
+      toggleStyle.textContent = rules.join("\n");
+    }
+
+    // Tab routing via /tab/:slug
+    function getSlugFromPath() {
+      const match = window.location.pathname.match(/^\/tab\/(.+)$/);
+      return match ? match[1] : null;
+    }
+
+    function activateTab(slug) {
+      if (!config.apps.find((a) => a.slug === slug)) slug = config.apps[0].slug;
+      tabBar.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.slug === slug));
+      tabContent.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === `panel-${slug}`));
+    }
+
+    tabBar.addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      const slug = btn.dataset.slug;
+      history.pushState(null, "", `/tab/${slug}`);
+      activateTab(slug);
+    });
+
+    window.addEventListener("popstate", () => {
+      activateTab(getSlugFromPath() || config.apps[0].slug);
+    });
+
+    // Activate from current URL or default to first tab
+    const initialSlug = getSlugFromPath() || config.apps[0].slug;
+    if (!getSlugFromPath()) history.replaceState(null, "", `/tab/${initialSlug}`);
+    activateTab(initialSlug);
+
+    // Init Weavy
+    const { Weavy } = await import(`${config.weavyUrl}/uikit-web/weavy.esm.js`);
+
+    const weavy = new Weavy();
+    weavy.url = config.weavyUrl;
+
+    weavy.tokenFactory = async (refresh) => {
+      const response = await fetch("/api/token");
+      const data = await response.json();
+      return data.access_token;
+    };
+  </script>
+</body>
+</html>
