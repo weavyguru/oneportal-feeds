@@ -9,15 +9,16 @@ a notification-driven deeplink navigation pattern.
 ## Table of Contents
 
 1. [Architecture Overview](#architecture-overview)
-2. [Directories & Users](#directories--users)
-3. [Permission Strategies](#permission-strategies)
+2. [Weavy API Endpoints Used](#weavy-api-endpoints-used)
+3. [Directories & Users](#directories--users)
+4. [Permission Strategies](#permission-strategies)
    - [Strategy 1: Weavy-native access levels](#strategy-1-weavy-native-access-levels)
    - [Strategy 2: Weavy-native access + member overrides](#strategy-2-weavy-native-access--member-overrides)
    - [Strategy 3: App-side CSS hiding (comment-but-not-post)](#strategy-3-app-side-css-hiding-comment-but-not-post)
-4. [Hiding Editors with CSS ::part()](#hiding-editors-with-csspart)
-5. [Notification Navigation & Deeplinks](#notification-navigation--deeplinks)
-6. [UID Naming Strategy for Deeplinks](#uid-naming-strategy-for-deeplinks)
-7. [Permission Matrix](#permission-matrix)
+5. [Hiding Editors with CSS ::part()](#hiding-editors-with-csspart)
+6. [Notification Navigation & Deeplinks](#notification-navigation--deeplinks)
+7. [UID Naming Strategy for Deeplinks](#uid-naming-strategy-for-deeplinks)
+8. [Permission Matrix](#permission-matrix)
 
 ---
 
@@ -73,6 +74,127 @@ a notification-driven deeplink navigation pattern.
 
 ---
 
+## Weavy API Endpoints Used
+
+Every call below is server-to-server using the API key, except where noted.
+Base URL: `WEAVY_URL` from `.env`.
+
+### Directories
+
+| Method | Endpoint                    | Used in        | Purpose                         |
+|--------|-----------------------------|----------------|---------------------------------|
+| `GET`  | `/api/directories/{name}`   | `seed()`       | Check if directory exists       |
+| `POST` | `/api/directories`          | `seed()`       | Create a new directory          |
+
+**Docs:** https://www.weavy.com/docs/reference/api/directories
+
+```bash
+# Create a directory
+curl -X POST {WEAVY_URL}/api/directories \
+  -H "Authorization: Bearer {API_KEY}" \
+  --json '{ "name": "directory-a" }'
+```
+
+### Users
+
+| Method | Endpoint                          | Used in        | Purpose                              |
+|--------|-----------------------------------|----------------|--------------------------------------|
+| `PUT`  | `/api/users/{uid}`                | `seed()`       | Create or update a user              |
+| `POST` | `/api/users/{uid}/tokens`         | `/api/token`   | Issue an access token for a user     |
+
+**Docs:** https://www.weavy.com/docs/reference/api/users
+
+```bash
+# Upsert a user into a directory
+curl -X PUT {WEAVY_URL}/api/users/user-1 \
+  -H "Authorization: Bearer {API_KEY}" \
+  --json '{
+    "name": "User 1 (Directory A)",
+    "email": "user1@test.local",
+    "directory": "directory-a"
+  }'
+
+# Issue an access token for the user (used by tokenFactory on the client)
+curl -X POST {WEAVY_URL}/api/users/user-1/tokens \
+  -H "Authorization: Bearer {API_KEY}" \
+  --json '{ "expires_in": 3600 }'
+# -> { "access_token": "wyu_..." }
+```
+
+### Apps
+
+| Method | Endpoint                              | Used in              | Purpose                                |
+|--------|---------------------------------------|----------------------|----------------------------------------|
+| `PUT`  | `/api/apps/{uid}`                     | `seed()`             | Create or update a posts app           |
+| `GET`  | `/api/apps/{uid}`                     | `/api/apps/:uid/permissions` | Fetch app details + user permissions |
+| `PUT`  | `/api/apps/{app}/members/{user}`      | `seed()`             | Add/update a member's access level     |
+
+**Docs:** https://www.weavy.com/docs/reference/api/apps
+
+```bash
+# Upsert a posts app with directory scope and access level
+curl -X PUT {WEAVY_URL}/api/apps/posts-directory-b-all \
+  -H "Authorization: Bearer {API_KEY}" \
+  --json '{
+    "type": "posts",
+    "name": "Directory B - all",
+    "access": "write",
+    "directory": "directory-b"
+  }'
+
+# Add a member with write access to a read-only app
+curl -X PUT {WEAVY_URL}/api/apps/posts-directory-b-user4-5-write/members/user-4 \
+  -H "Authorization: Bearer {API_KEY}" \
+  --json '{ "access": "write" }'
+
+# Fetch app as a specific user to check their permissions
+# (uses the USER's access token, not the API key)
+curl {WEAVY_URL}/api/apps/posts-directory-b-user4-5-write \
+  -H "Authorization: Bearer {USER_ACCESS_TOKEN}"
+# -> { ..., "permissions": ["read"] }           # read-only user
+# -> { ..., "permissions": ["read", "create"] } # write user
+```
+
+The `permissions` array in the response is what the demo uses to determine
+whether to show the "Hide editors" toggle. If it includes `"create"`, the
+user has write access.
+
+### Request flow
+
+```
+Browser                    Express Server               Weavy API
+   |                            |                           |
+   |  GET /api/config           |                           |
+   |<---------------------------|                           |
+   |  { apps, users, current }  |                           |
+   |                            |                           |
+   |  GET /api/token            |                           |
+   |--------------------------->|                           |
+   |                            |  POST /api/users/{uid}/tokens
+   |                            |-------------------------->|
+   |                            |  { access_token }         |
+   |                            |<--------------------------|
+   |  { access_token }          |                           |
+   |<---------------------------|                           |
+   |                            |                           |
+   |  GET /api/apps/{uid}/      |                           |
+   |      permissions           |                           |
+   |--------------------------->|                           |
+   |                            |  POST /api/users/{uid}/tokens
+   |                            |-------------------------->|
+   |                            |  { access_token }         |
+   |                            |<--------------------------|
+   |                            |  GET /api/apps/{uid}      |
+   |                            |  (as user, with token)    |
+   |                            |-------------------------->|
+   |                            |  { permissions: [...] }   |
+   |                            |<--------------------------|
+   |  { permissions }           |                           |
+   |<---------------------------|                           |
+```
+
+---
+
 ## Directories & Users
 
 Directories are Weavy's grouping mechanism. A user belongs to one directory
@@ -85,8 +207,10 @@ directory-a                    directory-b
 +-----------+-----------+      +-----------+-----------+-----------+
 ```
 
-Users are upserted on server startup via `PUT /api/users/{uid}` with a
-`directory` field that associates them.
+Users are upserted on server startup via
+[`PUT /api/users/{uid}`](https://www.weavy.com/docs/reference/api/users)
+with a `directory` field that associates them. Directories are created via
+[`POST /api/directories`](https://www.weavy.com/docs/reference/api/directories).
 
 ---
 
@@ -133,9 +257,10 @@ members:
   user-5: access = "write"              <-- override
 ```
 
-The app default is `read`, but specific users are added as members with
-`write` access. Weavy enforces this server-side — the UI automatically
-shows or hides the editor.
+The app is upserted via [`PUT /api/apps/{uid}`](https://www.weavy.com/docs/reference/api/apps)
+with `access: "read"`. Then specific users are added as members with `write`
+via [`PUT /api/apps/{app}/members/{user}`](https://www.weavy.com/docs/reference/api/apps).
+Weavy enforces this server-side — the UI automatically shows or hides the editor.
 
 ```
                       Can see app?    Can post?    Can comment?
@@ -145,9 +270,11 @@ User 4 (Dir B)           yes            yes           yes
 User 5 (Dir B)           yes            yes           yes
 ```
 
-A UI toggle is shown for read-only users. It queries the Weavy API
-(`GET /api/apps/{uid}` as the user) to check if `permissions` includes
-`"create"`. If not, it offers a checkbox to hide all editors via CSS.
+A UI toggle is shown for read-only users. The Express server fetches a
+short-lived token via [`POST /api/users/{uid}/tokens`](https://www.weavy.com/docs/reference/api/users),
+then calls [`GET /api/apps/{uid}`](https://www.weavy.com/docs/reference/api/apps) **as that user**.
+The response `permissions` array is checked for `"create"`. If absent, the
+user is read-only and a checkbox toggle is offered to hide editors via CSS.
 
 ### Strategy 3: App-side CSS hiding (comment-but-not-post)
 
@@ -441,9 +568,20 @@ COMMENT(*)= can comment on existing posts but post editor is hidden via CSS
 ## Running the Demo
 
 ```bash
+# 1. Copy the example env and fill in your Weavy credentials
+cp .env.example .env
+
+# 2. Install dependencies
+npm install
+
+# 3. Start with auto-reload
 npm run dev
 ```
 
 Open http://localhost:3001 and use the user dropdown to switch between
 users. Observe how each tab's editor visibility changes based on the
 active user and the permission strategy in use.
+
+On first startup, the server seeds all directories, users, and apps into
+your Weavy environment via the API. Subsequent restarts are idempotent
+(upserts).
